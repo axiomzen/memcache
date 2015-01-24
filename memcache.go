@@ -85,7 +85,7 @@ const (
 type command uint8
 
 const (
-	cmdGet = iota
+	cmdGet command = iota
 	cmdSet
 	cmdAdd
 	cmdReplace
@@ -114,10 +114,17 @@ const (
 	cmdPrependQ
 )
 
+// Auth Ops
+const (
+	OpAuthList = uint8(iota + 0x20)
+	OpAuthStart
+	OpAuthStep
+)
+
 type response uint16
 
 const (
-	respOk = iota
+	respOk response = iota
 	respKeyNotFound
 	respKeyExists
 	respValueTooLarge
@@ -665,6 +672,53 @@ func (c *Client) Set(item *Item) error {
 // key. ErrNotStored is returned if that condition is not met.
 func (c *Client) Add(item *Item) error {
 	return c.populateOne(cmdAdd, item, 0)
+}
+
+// added by chris
+func (c *Client) Replace(item *Item) error {
+	return c.populateOne(cmdReplace, item, 0)
+}
+
+// auth methods
+func (c *Client) Auth(user, pass string) error {
+	servers, err := c.servers.Servers()
+	var failed []*Addr
+	var errs []error
+	if err != nil {
+		return err
+	}
+
+	for _, addr := range servers {
+		cn, err := c.getConn(addr)
+		if err != nil {
+			failed = append(failed, addr)
+			errs = append(errs, err)
+			continue
+		}
+		// todo
+		if err = c.sendConnCommand(cn, "PLAIN", OpAuthStart, []byte(fmt.Sprintf("\x00%s\x00%s", user, pass)), 0, extras); err == nil {
+			_, _, _, _, err = c.parseResponse("", cn)
+		}
+		if err != nil {
+			failed = append(failed, addr)
+			errs = append(errs, err)
+		}
+		c.condRelease(cn, &err)
+	}
+	if len(failed) > 0 {
+		var buf bytes.Buffer
+		buf.WriteString("failed to auth on some servers: ")
+		for ii, addr := range failed {
+			if ii > 0 {
+				buf.WriteString(", ")
+			}
+			buf.WriteString(addr.String())
+			buf.WriteString(": ")
+			buf.WriteString(errs[ii].Error())
+		}
+		return errors.New(buf.String())
+	}
+	return nil
 }
 
 // CompareAndSwap writes the given item that was previously returned
