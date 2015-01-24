@@ -696,8 +696,10 @@ func (c *Client) Auth(user, pass string) error {
 			continue
 		}
 		// todo
+		var extras []byte
 		if err = c.sendConnCommand(cn, "PLAIN", OpAuthStart, []byte(fmt.Sprintf("\x00%s\x00%s", user, pass)), 0, extras); err == nil {
-			_, _, _, _, err = c.parseResponse("", cn)
+			//hdr, key, extras, value, nil
+			hdr, key, extras, value, err = c.parseResponse("", cn)
 		}
 		if err != nil {
 			failed = append(failed, addr)
