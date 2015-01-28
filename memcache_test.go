@@ -28,6 +28,8 @@ import (
 )
 
 const testServer = "localhost:11211"
+const username = ""
+const password = ""
 
 func (c *Client) totalOpen() int {
 	c.mu.Lock()
@@ -47,7 +49,7 @@ func newLocalhostServer(tb testing.TB) *Client {
 	}
 	c.Write([]byte("flush_all\r\n"))
 	c.Close()
-	client, err := New(testServer)
+	client, err := New(username, password, testServer)
 	if err != nil {
 		tb.Fatal(err)
 	}
@@ -70,7 +72,7 @@ func newUnixServer(tb testing.TB) (*exec.Cmd, *Client) {
 		}
 		time.Sleep(time.Duration(25*i) * time.Millisecond)
 	}
-	c, err := New(sock)
+	c, err := New(username, password, sock)
 	if err != nil {
 		tb.Fatal(err)
 	}
