@@ -34,7 +34,7 @@ type ServerList struct {
 // NewServerList returns an error if any of the received addresses
 // is not valid or fails to resolve, but it doesn't try to connect
 // to the provided servers.
-func NewServerList(servers ...string) (*ServerList, error) {
+func NewServerList(username, password string, servers ...string) (*ServerList, error) {
 	addrs := make([]*Addr, len(servers))
 	for i, server := range servers {
 		if strings.Contains(server, "/") {
@@ -42,13 +42,13 @@ func NewServerList(servers ...string) (*ServerList, error) {
 			if err != nil {
 				return nil, err
 			}
-			addrs[i] = NewAddr(addr)
+			addrs[i] = NewAddr(addr, username, password)
 		} else {
 			tcpaddr, err := net.ResolveTCPAddr("tcp", server)
 			if err != nil {
 				return nil, err
 			}
-			addrs[i] = NewAddr(tcpaddr)
+			addrs[i] = NewAddr(tcpaddr, username, password)
 		}
 	}
 	return &ServerList{addrs: addrs}, nil

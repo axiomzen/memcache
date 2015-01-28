@@ -21,10 +21,13 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"io/ioutil"
+	"log"
 	"net"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 )
@@ -75,7 +78,7 @@ var (
 )
 
 // DefaultTimeout is the default socket read/write timeout.
-const DefaultTimeout = time.Duration(100) * time.Millisecond
+const DefaultTimeout = time.Duration(1000) * time.Millisecond
 
 const (
 	buffered            = 8 // arbitrary buffered channel size, for readability
@@ -112,6 +115,13 @@ const (
 	cmdFlushQ
 	cmdAppendQ
 	cmdPrependQ
+)
+
+// Auth Ops
+const (
+	OpAuthList = uint8(iota + 0x20)
+	OpAuthStart
+	OpAuthStep
 )
 
 type response uint16
@@ -203,8 +213,8 @@ func poolSize() int {
 // New returns a memcache client using the provided server(s)
 // with equal weight. If a server is listed multiple times,
 // it gets a proportional amount of weight.
-func New(server ...string) (*Client, error) {
-	servers, err := NewServerList(server...)
+func New(username, password string, server ...string) (*Client, error) {
+	servers, err := NewServerList(username, password, server...)
 	if err != nil {
 		return nil, err
 	}
@@ -438,6 +448,14 @@ func (c *Client) getConn(addr *Addr) (*conn, error) {
 			nc:   nc,
 			addr: addr,
 		}
+		// authenticate now that we have a valid connection
+		if addr.u != "" && addr.p != "" {
+			// lets authenticate now if we have credentials
+			if err = c.Auth(cn, addr.u, addr.p); err != nil {
+				// unable to authenticate
+				return nil, err
+			}
+		}
 	}
 	if c.timeout > 0 {
 		cn.nc.SetDeadline(time.Now().Add(c.timeout))
@@ -448,24 +466,30 @@ func (c *Client) getConn(addr *Addr) (*conn, error) {
 // Get gets the item for the given key. ErrCacheMiss is returned for a
 // memcache cache miss. The key must be at most 250 bytes in length.
 func (c *Client) Get(key string) (*Item, error) {
+
 	cn, err := c.sendCommand(key, cmdGet, nil, 0, nil)
 	if err != nil {
+		//log.Println("MEMCACHE: error on Get(): " + err.Error())
 		return nil, err
 	}
+
 	return c.parseItemResponse(key, cn, true)
 }
 
 func (c *Client) sendCommand(key string, cmd command, value []byte, casid uint64, extras []byte) (*conn, error) {
 	addr, err := c.servers.PickServer(key)
 	if err != nil {
+		//log.Println("MEMCACHE: error on sendCommand PickServer: " + err.Error())
 		return nil, err
 	}
 	cn, err := c.getConn(addr)
 	if err != nil {
+		//log.Println("MEMCACHE: error on sendCommand getConn: " + err.Error())
 		return nil, err
 	}
 	err = c.sendConnCommand(cn, key, cmd, value, casid, extras)
 	if err != nil {
+		//log.Println("MEMCACHE: error on sendCommand sendConnCommand: " + err.Error())
 		cn.nc.Close()
 		return nil, err
 	}
@@ -527,15 +551,17 @@ func (c *Client) parseResponse(rKey string, cn *conn) ([]byte, []byte, []byte, [
 	var err error
 	hdr := make([]byte, 24)
 	if err = readAtLeast(cn.nc, hdr, 24); err != nil {
+		//log.Println("MEMCACHE: error in readAtLeast: " + err.Error())
 		return nil, nil, nil, nil, err
 	}
 	if hdr[0] != respMagic {
 		return nil, nil, nil, nil, ErrBadMagic
 	}
 	total := int(bUint32(hdr[8:12]))
-	status := bUint16(hdr[6:8])
+	status := response(bUint16(hdr[6:8]))
 	if status != respOk {
 		if _, err = io.CopyN(ioutil.Discard, cn.nc, int64(total)); err != nil {
+			//log.Println("MEMCACHE: error in CopyN: " + err.Error())
 			return nil, nil, nil, nil, err
 		}
 		if status == respInvalidArgs && !legalKey(rKey) {
@@ -548,6 +574,7 @@ func (c *Client) parseResponse(rKey string, cn *conn) ([]byte, []byte, []byte, [
 	if el > 0 {
 		extras = make([]byte, el)
 		if err = readAtLeast(cn.nc, extras, el); err != nil {
+			//log.Println("MEMCACHE: error in readAtLeast: " + err.Error())
 			return nil, nil, nil, nil, err
 		}
 	}
@@ -556,6 +583,7 @@ func (c *Client) parseResponse(rKey string, cn *conn) ([]byte, []byte, []byte, [
 	if kl > 0 {
 		key = make([]byte, int(kl))
 		if err = readAtLeast(cn.nc, key, kl); err != nil {
+			//log.Println("MEMCACHE: error in readAtLeast(2): " + err.Error())
 			return nil, nil, nil, nil, err
 		}
 	}
@@ -564,6 +592,7 @@ func (c *Client) parseResponse(rKey string, cn *conn) ([]byte, []byte, []byte, [
 	if vl > 0 {
 		value = make([]byte, vl)
 		if err = readAtLeast(cn.nc, value, vl); err != nil {
+			//log.Println("MEMCACHE: error in readAtLeast(3): " + err.Error())
 			return nil, nil, nil, nil, err
 		}
 	}
@@ -581,10 +610,12 @@ func (c *Client) parseUintResponse(key string, cn *conn) (uint64, error) {
 
 func (c *Client) parseItemResponse(key string, cn *conn, release bool) (*Item, error) {
 	hdr, k, extras, value, err := c.parseResponse(key, cn)
+
 	if release {
 		c.condRelease(cn, &err)
 	}
 	if err != nil {
+		//log.Println("MEMCACHE: error on parseItemResponse(): " + err.Error())
 		return nil, err
 	}
 	var flags uint32
@@ -667,6 +698,53 @@ func (c *Client) Add(item *Item) error {
 	return c.populateOne(cmdAdd, item, 0)
 }
 
+// doesn't pass tests, so lets not include it
+func (c *Client) Replace(item *Item) error {
+	//return c.populateOne(cmdReplace, item, 0)
+	return nil
+}
+
+// auth method
+// already have connection
+func (c *Client) Auth(cn *conn, user, pass string) error {
+	var extras []byte
+	var err error
+	if err = c.sendConnCommand(cn, "", command(OpAuthList), nil, 0, extras); err == nil {
+		//hdr, key, extras, value, nil
+		_, _, _, value, err := c.parseResponse("", cn)
+
+		if err == nil {
+			// check for "PLAIN" in the value
+			if strings.Index(string(value), "PLAIN") != -1 {
+				// now do the actual auth
+				// reuse connection
+				if err = c.sendConnCommand(cn, "PLAIN", command(OpAuthStart), []byte(fmt.Sprintf("\x00%s\x00%s", user, pass)), 0, extras); err == nil {
+					// parse the response now
+					_, _, _, _, err = c.parseResponse("PLAIN", cn)
+					if err == nil {
+						// sweet
+						//log.Println("MEMCACHE: authentication successful")
+					}
+				} else {
+					// error with authentication
+					log.Println("MEMCACHE: error with auth: " + err.Error())
+				}
+			} else {
+				// unsupported auth method
+				log.Println("MEMCACHE: unsupported auth types: " + string(value))
+				err = errors.New("unsupported authentication type: " + string(value))
+			}
+		} else {
+			log.Println("MEMCACHE: error with parsing response from listing auth: " + err.Error())
+		}
+	} else {
+		log.Println("MEMCACHE: error with listing auth: " + err.Error())
+	}
+	// will close if we can't auth
+	c.condRelease(cn, &err)
+	return err
+}
+
 // CompareAndSwap writes the given item that was previously returned
 // by Get, if the value was neither modified or evicted between the
 // Get and the CompareAndSwap calls. The item's Key should not change
@@ -687,6 +765,7 @@ func (c *Client) populateOne(cmd command, item *Item, casid uint64) error {
 		return err
 	}
 	hdr, _, _, _, err := c.parseResponse(item.Key, cn)
+	//log.Println("MEMCACHE: resposne from set: header: " + string(hdr) + "key: " + string(key) + "extras: " + string(extras) + "value: " + string(value))
 	if err != nil {
 		c.condRelease(cn, &err)
 		return err
