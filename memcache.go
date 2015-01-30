@@ -78,7 +78,7 @@ var (
 )
 
 // DefaultTimeout is the default socket read/write timeout.
-const DefaultTimeout = time.Duration(1000) * time.Millisecond
+const DefaultTimeout = time.Duration(5000) * time.Millisecond
 
 const (
 	buffered            = 8 // arbitrary buffered channel size, for readability
