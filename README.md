@@ -1,4 +1,5 @@
 [![Build Status](https://travis-ci.org/axiomzen/memcache.svg?branch=master)](https://travis-ci.org/axiomzen/memcache)
+[![Coverage Status](https://coveralls.io/repos/github/axiomzen/memcache/badge.svg?branch=master)](https://coveralls.io/github/axiomzen/memcache?branch=master)
 
 Memcache Client in Go (golang)
 =============================
